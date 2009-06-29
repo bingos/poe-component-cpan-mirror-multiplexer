@@ -5,6 +5,8 @@ use warnings;
 use POE qw(Filter::HTTPD Filter::Stream Component::Client::HTTP Filter::HTTP::Parser);
 use HTTP::Status qw(status_message RC_BAD_REQUEST RC_OK RC_LENGTH_REQUIRED);
 use URI;
+use Carp;
+use Net::IP qw(ip_is_ipv4);
 use File::Spec::Unix;
 use Test::POE::Server::TCP;
 use Test::POE::Client::TCP;
@@ -26,9 +28,11 @@ our $errpage = <<HERE;
 HERE
 
 use MooseX::POE;
+use Moose::Util::TypeConstraints;
 
 has 'address' => (
   is => 'ro',
+  isa => subtype 'Str' => where { ip_is_ipv4( $_ ) },
 );
  
 has 'port' => (
@@ -54,6 +58,7 @@ has '_requests' => (
   isa => 'HashRef',
   default => sub {{}},
   init_arg => undef,
+  clearer => '_clear_requests',
 );
 
 has 'error_page' => (
@@ -73,7 +78,34 @@ has 'mirrors' => (
          ] 
    },
 );
- 
+
+has '_shutdown' => (
+  is => 'ro',
+  isa => 'Bool',
+  default => sub {0},
+  init_arg => undef,
+  writer => '_set_shutdown',
+);
+
+has 'event' => (
+  is => 'ro',
+);
+
+has 'session' => (
+  is => 'ro',
+  writer => '_set_session',
+  clearer => '_clear_session',
+);
+
+has 'postback' => (
+  is => 'ro',
+  isa => 'POE::Session::AnonEvent',
+);
+
+sub spawn {
+  shift->new(@_);
+}
+
 sub _build__httpd {
   my $self = shift;
   Test::POE::Server::TCP->spawn(
@@ -83,15 +115,44 @@ sub _build__httpd {
      filter => POE::Filter::HTTP::Parser->new( type => 'server' ),
   );
 }
- 
+
 sub START {
-  my ($kernel,$self) = @_[KERNEL,OBJECT];
+  my ($kernel,$self,$sender) = @_[KERNEL,OBJECT,SENDER];
+  if ( $self->event ) {
+    if ( $kernel == $sender and !$self->session ) {
+      croak "Not called from another POE session and 'session' wasn't set\n";
+    }
+    if ( $self->session ) {
+       if ( my $ref = $kernel->alias_resolve( $self->session ) ) {
+	  $self->_set_session( $ref->ID() );
+       }
+       else {
+          $self->_set_session( $sender->ID() );
+       }
+    }
+    else {
+      $self->_set_session( $sender->ID() );
+    }
+    $kernel->refcount_increment( $self->session, __PACKAGE__ );
+  }
   $self->httpd;
   return;
 }
  
+event 'shutdown' => sub {
+  my ($kernel,$self) = @_[KERNEL,OBJECT];
+  $self->_set_shutdown(1);
+  $kernel->post( $self->_requests->{$_}->{agent}, 'shutdown' )
+    for keys %{ $self->_requests };
+  $self->_clear_requests;
+  $self->httpd->shutdown;
+  return;
+};
+ 
 event 'httpd_registered' => sub {
   my ($kernel,$self,$httpd) = @_[KERNEL,OBJECT,ARG0];
+  $self->_set_port( $httpd->port );
+  # Perhaps trigger a setup event.
   return;
 };
  
@@ -103,12 +164,13 @@ event 'httpd_connected' => sub {
  
 event 'httpd_disconnected' => sub {
   my ($kernel,$self,$id) = @_[KERNEL,OBJECT,ARG0];
+  warn "$id disconnected\n";
   my $httpc = delete $self->_requests->{$id}->{httpc};
-  $kernel->post( $httpc, 'shutdown' );
+  $kernel->post( $httpc, 'shutdown' ) if $kernel->alias_resolve( $httpc );
   delete $self->_requests->{$id};
   return;
 };
- 
+
 event 'httpd_client_input' => sub {
   my ($kernel,$self,$id,$request) = @_[KERNEL,OBJECT,ARG0,ARG1];
   $request->remove_header('Accept-Encoding');
@@ -119,7 +181,8 @@ event 'httpd_client_input' => sub {
      Alias => $httpc,
      Streaming => 4096,
      FollowRedirects => 2,
-  );
+     Timeout => 60,
+  ) unless $kernel->alias_resolve( $httpc );
   $kernel->yield( '_fetch_uri', $id );
   return;
 };
@@ -130,7 +193,6 @@ event '_fetch_uri' => sub {
   my $request = $self->_requests->{$id}->{request};
   my $httpc = $self->_requests->{$id}->{agent};
   my $mirror = shift @{ $self->_requests->{$id}->{mirrors} };
-  # Hmmm what to do when we run out of mirrors
   unless ( $mirror ) {
      my $response = HTTP::Response->new( 500 );
      $response->content( $self->error_page );
@@ -164,6 +226,8 @@ sub _gen_uri {
  
 event 'httpd_client_flushed' => sub {
   my ($kernel,$self,$id) = @_[KERNEL,OBJECT,ARG0];
+  return unless defined $self->_requests->{$id};
+  return unless $self->_shutdown;
   return;
 };
  
@@ -182,6 +246,10 @@ event '_response' => sub {
   }
   unless ( $chunk ) {
      $self->_requests->{$id}->{stream} = 0;
+     if ( $self->_shutdown ) {
+        $self->_requests->{id}->{shutdown} = 1;
+        $self->httpd->disconnect( $id );
+     }
      return;
   }
   $self->httpd->send_to_client( $id, $chunk );
