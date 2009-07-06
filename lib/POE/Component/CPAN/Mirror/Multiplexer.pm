@@ -51,6 +51,7 @@ has '_httpd' => (
   isa => 'Test::POE::Server::TCP',
   lazy_build => 1,
   init_arg => undef,
+  handles => [qw(client_info)],
 );
  
 has '_requests' => (
@@ -68,15 +69,15 @@ has 'error_page' => (
 
 has 'mirrors' => (
   is => 'ro',
-  isa => 'ArrayRef',
   default => 
    sub { [
-	  'http://cpan.cpantesters.org/',
+	        'http://cpan.cpantesters.org/',
           'http://cpan.hexten.net',
           'http://www.nic.funet.fi/pub/CPAN/',
           'http://www.cpan.org/',
          ] 
    },
+   isa => subtype as 'ArrayRef[Str]' => where { ( scalar grep { URI->new($_)->scheme eq 'http' } @$_ ) == scalar @$_ },
 );
 
 has '_shutdown' => (
@@ -100,6 +101,7 @@ has 'session' => (
 has 'postback' => (
   is => 'ro',
   isa => 'POE::Session::AnonEvent',
+  clearer => '_clear_postback',
 );
 
 sub spawn {
@@ -124,7 +126,7 @@ sub START {
     }
     if ( $self->session ) {
        if ( my $ref = $kernel->alias_resolve( $self->session ) ) {
-	  $self->_set_session( $ref->ID() );
+	        $self->_set_session( $ref->ID() );
        }
        else {
           $self->_set_session( $sender->ID() );
@@ -145,6 +147,8 @@ event 'shutdown' => sub {
   $kernel->post( $self->_requests->{$_}->{agent}, 'shutdown' )
     for keys %{ $self->_requests };
   $self->_clear_requests;
+  $self->_clear_postback;
+  $kernel->refcount_decrement( $self->session, __PACKAGE__ ) if $self->session;
   $self->httpd->shutdown;
   return;
 };
@@ -177,6 +181,15 @@ event 'httpd_client_input' => sub {
   my @mirrors = @{ $self->mirrors };
   my $httpc = join('-',$agent,$id);
   $self->_requests->{$id} = { stream => 0, agent => $httpc, request => $request, mirrors => \@mirrors };
+  if ( $self->event or $self->postback ) {
+     my $client_info = $self->httpd->client_info( $id );
+     if ( $self->postback ) {
+       $self->postback->( $request, $client_info );
+     }
+     else {
+       $kernel->post( $self->session, $self->event, $request, $client_info );
+     }
+  }
   POE::Component::Client::HTTP->spawn(
      Alias => $httpc,
      Streaming => 4096,
@@ -202,7 +215,7 @@ event '_fetch_uri' => sub {
      delete $self->_requests->{$id};
      return;
   }
-  my $req = HTTP::Request->new( GET => $self->_gen_uri( $mirror, $request->uri->path ) );
+  my $req = HTTP::Request->new( $request->method => $self->_gen_uri( $mirror, $request->uri->path ) );
   $kernel->post(
     $httpc,
     'request',
@@ -250,6 +263,7 @@ event '_response' => sub {
         $self->_requests->{id}->{shutdown} = 1;
         $self->httpd->disconnect( $id );
      }
+     $self->httpd->disconnect( $id ) unless _keepalive( $self->_requests->{$id}->{request} );
      return;
   }
   $self->httpd->send_to_client( $id, $chunk );
@@ -278,6 +292,20 @@ sub _response_headers {
     return join("\x0D\x0A", @headers, "") . $resp->content;
 }
 
+sub _keepalive {
+  my $req = shift || return;
+  my $conn = $req->header('Connection');
+  my $protocol = $req->protocol;
+  if ( $conn and $conn =~ /close/i ) {
+     return 0;
+  }
+  if ( $conn and $conn =~ /keep-alive/i ) {
+     return 1;
+  }
+  return 1 if $protocol and $protocol eq 'HTTP/1.1';
+  return 0;
+}
+
 no MooseX::POE;
 
 __PACKAGE__->meta->make_immutable;
@@ -286,4 +314,70 @@ __PACKAGE__->meta->make_immutable;
 
 __END__
 
+=head1 NAME
 
+POE::Component::CPAN::Mirror::Multiplexer - Multiplex HTTP CPAN mirrors
+
+=head1 SYNOPSIS
+
+  use strict;
+  use warnings;
+  use Getopt::Long;
+  use POE qw(Component::CPAN::Mirror::Multiplexer);
+
+  my $port = 8080;
+  GetOptions('port=i',\$port) or die;
+
+  my $test_httpd = POE::Component::CPAN::Mirror::Multiplexer->new( port => $port );
+
+  $poe_kernel->run();
+  exit 0;
+
+=head1 DESCRIPTION
+
+POE::Component::CPAN::Mirror::Multiplexer is a L<POE> component that acts as a HTTP server that
+multiplexes HTTP CPAN mirrors. CPAN clients such as L<CPAN> or L<CPANPLUS> can be configured to
+use the multiplexer as their CPAN mirror. The multiplexer will then query a list of HTTP CPAN 
+mirrors for the requested URLs.
+
+=head1 CONSTRUCTOR
+
+=over
+
+=item C<spawn>
+
+Takes a number of options, only those marked as C<mandatory> are required:
+
+  'address', bind to a particular IP address, default is INADDR_ANY;
+  'port', bind to a particular TCP port, default is 0;
+  'event',
+  'session',
+  'postback',
+  'mirrors', an arrayref of http urls, the default should be fine;
+  'error_page',
+
+=back
+
+=head1 METHODS
+
+=over
+
+=item C<get_session_id>
+
+Returns the L<POE::Session> ID of the component.
+
+=back
+
+=head1 OUTPUT EVENTS
+
+=head1 AUTHOR
+
+Chris C<BinGOs> Williams <chris@bingosnet.co.uk>
+
+=head1 LICENSE
+
+Copyright E<copy> Chris Williams
+
+This module may be used, modified, and distributed under the same terms as Perl itself. Please see the license that came with your Perl distribution for details.
+
+=cut

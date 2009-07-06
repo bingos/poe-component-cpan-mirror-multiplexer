@@ -1,18 +1,13 @@
 use strict;
 use warnings;
-use Test::More tests => 4;
+use Test::More tests => 9;
 use POE qw(Filter::HTTP::Parser Component::CPAN::Mirror::Multiplexer);
 use Test::POE::Client::TCP;
 use HTTP::Request;
 
-my $httpd = POE::Component::CPAN::Mirror::Multiplexer->spawn(
-   address => '127.0.0.1',
-   port => 0,
-);
-
 POE::Session->create(
   package_states => [
-     'main' => [qw(_start _stop _start_tests httpc_connected httpc_input httpc_disconnected)],
+     'main' => [qw(_start _stop _start_tests httpc_connected httpc_input httpc_disconnected _got_request)],
   ],
 );
 
@@ -21,6 +16,12 @@ exit 0;
 
 sub _start {
   my ($kernel,$heap) = @_[KERNEL,HEAP];
+  $heap->{httpd} = POE::Component::CPAN::Mirror::Multiplexer->spawn(
+     address => '127.0.0.1',
+     port => 0,
+     postback => $_[SESSION]->postback( '_got_request' ),
+  );
+
   $kernel->yield( '_start_tests' );
   return;
 }
@@ -32,11 +33,11 @@ sub _stop {
 
 sub _start_tests {
   my ($kernel,$heap) = @_[KERNEL,HEAP];
-  unless ( $httpd->port ) {
+  unless ( $heap->{httpd}->port ) {
      $kernel->yield( '_start_tests' );
      return;
   }
-  $heap->{port} = $httpd->port;
+  $heap->{port} = $heap->{httpd}->port;
   diag($heap->{port});
   $heap->{httpc} = Test::POE::Client::TCP->spawn(
 	prefix	    => 'httpc',
@@ -69,6 +70,15 @@ sub httpc_input {
   isa_ok( $resp, 'HTTP::Response' );
   ok( $resp->is_success, 'Successful response' );
 #  $heap->{httpc}->shutdown;
-  $httpd->yield('shutdown');
+  $heap->{httpd}->yield('shutdown');
+  return;
+}
+
+sub _got_request {
+  my ($kernel,$heap) = @_[KERNEL,HEAP];
+  my ($request,$info) = @{ $_[ARG1] };
+  isa_ok( $request, 'HTTP::Request' );
+  diag($request->as_string);
+  ok( defined $info->{$_}, "Info has '$_'" ) for qw(peeraddr peerport sockaddr sockport);
   return;
 }
