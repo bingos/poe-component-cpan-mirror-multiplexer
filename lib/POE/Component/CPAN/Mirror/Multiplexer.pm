@@ -168,9 +168,9 @@ event 'httpd_connected' => sub {
  
 event 'httpd_disconnected' => sub {
   my ($kernel,$self,$id) = @_[KERNEL,OBJECT,ARG0];
-  warn "$id disconnected\n";
-  my $httpc = delete $self->_requests->{$id}->{httpc};
-  $kernel->post( $httpc, 'shutdown' ) if $kernel->alias_resolve( $httpc );
+  return unless exists $self->_requests->{$id};
+  my $httpc = delete $self->_requests->{$id}->{agent};
+  $kernel->post( $httpc, 'shutdown' ) if defined $httpc and $kernel->alias_resolve( $httpc );
   delete $self->_requests->{$id};
   return;
 };
@@ -202,7 +202,7 @@ event 'httpd_client_input' => sub {
 
 event '_fetch_uri' => sub {
   my ($kernel,$self,$id) = @_[KERNEL,OBJECT,ARG0];
-  return unless defined $self->_requests->{$id};
+  return unless exists $self->_requests->{$id};
   my $request = $self->_requests->{$id}->{request};
   my $httpc = $self->_requests->{$id}->{agent};
   my $mirror = shift @{ $self->_requests->{$id}->{mirrors} };
