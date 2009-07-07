@@ -7,7 +7,6 @@ use HTTP::Status qw(status_message RC_BAD_REQUEST RC_OK RC_LENGTH_REQUIRED);
 use URI;
 use Carp;
 use Net::IP qw(ip_is_ipv4);
-use File::Spec::Unix;
 use Test::POE::Server::TCP;
 use Test::POE::Client::TCP;
 
@@ -366,9 +365,50 @@ Takes a number of options, only those marked as C<mandatory> are required:
 
 Returns the L<POE::Session> ID of the component.
 
+=item C<port>
+
+Returns the assigned TCP port.
+
+=back
+
+=head1 INPUT EVENTS
+
+=over
+
+=item C<shutdown>
+
+Terminates the component.
+
 =back
 
 =head1 OUTPUT EVENTS
+
+If C<event> or C<postback> is specified in C<spawn> then the following events will be emitted whenever a client 
+makes a request.
+
+=over
+
+=item C<event>
+
+C<ARG0> will be a L<HTTP::Request> object. C<ARG1> will be a HASHREF with the following keys:
+
+  'peeraddr', the client address;
+  'peerport', the client TCP port;
+  'sockaddr', our address;
+  'sockport', our TCP port;
+
+=item C<postback>
+
+C<ARG0> will be an ARRAYREF with the parameters that were specified when the postback was created, see
+L<POE::Session> for details. C<ARG1> will be an ARRAYREF with two items, a L<HTTP::Request> object and 
+a HASHREF with the following keys:
+
+  'peeraddr', the client address;
+  'peerport', the client TCP port;
+  'sockaddr', our address;
+  'sockport', our TCP port;
+
+=back
 
 =head1 AUTHOR
 
@@ -379,5 +419,13 @@ Chris C<BinGOs> Williams <chris@bingosnet.co.uk>
 Copyright E<copy> Chris Williams
 
 This module may be used, modified, and distributed under the same terms as Perl itself. Please see the license that came with your Perl distribution for details.
+
+=head1 SEE ALSO
+
+L<HTTP::Request>
+
+L<POE::Session>
+
+L<http://mirrors.cpan.org/>
 
 =cut
