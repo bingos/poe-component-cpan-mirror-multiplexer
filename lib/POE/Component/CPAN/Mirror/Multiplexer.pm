@@ -10,7 +10,7 @@ use Net::IP qw(ip_is_ipv4);
 use Test::POE::Server::TCP;
 use Test::POE::Client::TCP;
 
-our $VERSION = '0.02';
+our $VERSION = '0.04';
 
 our $agent = __PACKAGE__ . "$$";
 
@@ -349,11 +349,11 @@ Takes a number of options, only those marked as C<mandatory> are required:
 
   'address', bind to a particular IP address, default is INADDR_ANY;
   'port', bind to a particular TCP port, default is 0;
-  'event',
-  'session',
-  'postback',
+  'event', an event in your session to send request meta to;
+  'session', specify an alternative session to send the above event to;
+  'postback', specify a POE::Session postback instead of the above;
   'mirrors', an arrayref of http urls, the default should be fine;
-  'error_page',
+  'error_page', a scalar of HTML to be returned instead of the default on error conditions;
 
 =back
 
